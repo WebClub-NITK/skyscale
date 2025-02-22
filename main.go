@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 
-	"github.com/spf13/cobra"
 	"path/filepath"
+
+	"github.com/spf13/cobra"
 )
 
 var rootCmd = &cobra.Command{
@@ -14,24 +18,13 @@ var rootCmd = &cobra.Command{
 	Long:  `Skyscale is a lightweight serverless function management platform powered by Firecracker`,
 }
 
-func main() {
-	if err := rootCmd.Execute(); err != nil {
-		fmt.Println(err)
-		os.Exit(1)
-	}
-}
-
 func init() {
 	// Add subcommands here
 	rootCmd.AddCommand(initCmd)
-	rootCmd.AddCommand(packageCmd)
 	rootCmd.AddCommand(deployCmd)
 	rootCmd.AddCommand(invokeCmd)
 	rootCmd.AddCommand(logsCmd)
 }
-
-
-
 
 var initCmd = &cobra.Command{
 	Use:   "init [function_name]",
@@ -82,23 +75,71 @@ entrypoint: handler.handler`,
 	return nil
 }
 
-
-var packageCmd = &cobra.Command{
-	Use:   "package",
-	Short: "Package a function for deployment",
+var deployCmd = &cobra.Command{
+	Use:   "deploy [function_name]",
+	Short: "Deploy a function to Skyscale",
+	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		// TODO: Implement function packaging
-		fmt.Println("Packaging function...")
+		functionName := args[0]
+		err := deployFunction(functionName)
+		if err != nil {
+			fmt.Printf("❌ Error deploying function: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("✅ Function '%s' deployed successfully.\n", functionName)
 	},
 }
 
-var deployCmd = &cobra.Command{
-	Use:   "deploy",
-	Short: "Deploy a function to Skyscale",
-	Run: func(cmd *cobra.Command, args []string) {
-		// TODO: Implement function deployment
-		fmt.Println("Deploying function...")
-	},
+func deployFunction(functionName string) error {
+	// Define the function directory
+	functionDir := filepath.Join(functionName)
+	// Read the handler.py file
+	handlerPath := filepath.Join(functionDir, "handler.py")
+	handlerCode, err := os.ReadFile(handlerPath)
+	if err != nil {
+		return fmt.Errorf("failed to read handler.py: %v", err)
+	}
+
+	// Read the requirements.txt file
+	requirementsPath := filepath.Join(functionDir, "requirements.txt")
+	requirements, err := os.ReadFile(requirementsPath)
+	if err != nil {
+		return fmt.Errorf("failed to read requirements.txt: %v", err)
+	}
+
+	// Read the skyscale.yaml file
+	configPath := filepath.Join(functionDir, "skyscale.yaml")
+	config, err := os.ReadFile(configPath)
+	if err != nil {
+		return fmt.Errorf("failed to read skyscale.yaml: %v", err)
+	}
+
+	// Prepare the function data
+	data := map[string]interface{}{
+		"name":         functionName,
+		"code":         string(handlerCode),
+		"requirements": string(requirements),
+		"config":       string(config),
+	}
+
+	// Convert data to JSON
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+
+	// Send POST request to the server
+	resp, err := http.Post("http://localhost:8080/deploy", "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to deploy function, status: %s", resp.Status)
+	}
+
+	return nil
 }
 
 var invokeCmd = &cobra.Command{
@@ -117,4 +158,11 @@ var logsCmd = &cobra.Command{
 		// TODO: Implement log retrieval
 		fmt.Println("Retrieving function logs...")
 	},
+}
+
+func main() {
+	if err := rootCmd.Execute(); err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
 }
