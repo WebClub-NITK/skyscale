@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -19,14 +18,15 @@ import (
 
 const (
 	// Configuration
-	controlPlaneURL = "http://172.16.0.1:8080" // Control plane URL (host machine)
-	pollInterval    = 5 * time.Second
+	controlPlaneURL = "http://localhost:8080" // Control plane URL (host machine)
+	daemonPort      = "8081"                  // Port for the daemon to listen on
 	codeDir         = "/tmp/faas/code"
 	logDir          = "/var/log/faas"
 
 	// Endpoints
-	functionEndpoint = "/api/v1/functions"
-	resultEndpoint   = "/api/v1/results"
+	functionEndpoint = "/api/functions"
+	resultEndpoint   = "/api/results"
+	registerEndpoint = "/api/vms/register"
 )
 
 // FunctionPayload represents the code and metadata to be executed
@@ -65,6 +65,7 @@ type VMInfo struct {
 }
 
 var vmInfo VMInfo
+var httpClient *http.Client
 
 func init() {
 	// Create necessary directories
@@ -85,13 +86,9 @@ func init() {
 	if err == nil {
 		log.SetOutput(io.MultiWriter(os.Stdout, logFile))
 	}
-}
-
-func main() {
-	log.Printf("Starting FaaS daemon on %s (ID: %s)", vmInfo.MachineName, vmInfo.VMID)
 
 	// Configure HTTP client
-	client := &http.Client{
+	httpClient = &http.Client{
 		Timeout: 30 * time.Second,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
@@ -99,69 +96,123 @@ func main() {
 			},
 		},
 	}
+}
 
-	// Main polling loop
-	for {
-		payload, err := pollForFunction(client)
-		if err != nil {
-			log.Printf("Error polling for function: %v", err)
-			time.Sleep(pollInterval)
-			continue
-		}
+func main() {
+	log.Printf("Starting FaaS daemon on %s (ID: %s)", vmInfo.MachineName, vmInfo.VMID)
 
-		if payload != nil {
-			log.Printf("Received function execution request: %s (ID: %s)", payload.Name, payload.RequestID)
-			vmInfo.Status = "busy"
+	// Register VM with control plane
+	// if err := registerVM(); err != nil {
+	// 	log.Fatalf("Failed to register VM with control plane: %v", err)
+	// }
 
-			// Execute the function
-			result := executeFunction(payload)
+	// Set up HTTP server for receiving function execution requests
+	http.HandleFunc("/execute", handleExecuteRequest)
+	http.HandleFunc("/health", handleHealthCheck)
 
-			// Send the result back to the control plane
-			err := sendResult(client, result)
-			if err != nil {
-				log.Printf("Error sending result: %v", err)
-			}
-
-			// Mark VM as ready again
-			vmInfo.Status = "ready"
-		}
-
-		time.Sleep(pollInterval)
+	// Start HTTP server
+	log.Printf("Starting HTTP server on port %s", daemonPort)
+	if err := http.ListenAndServe(":"+daemonPort, nil); err != nil {
+		log.Fatalf("Failed to start HTTP server: %v", err)
 	}
 }
 
-// pollForFunction checks the control plane for new functions to execute
-func pollForFunction(client *http.Client) (*FunctionPayload, error) {
+// registerVM registers this VM with the control plane
+func registerVM() error {
 	data, err := json.Marshal(vmInfo)
 	if err != nil {
-		return nil, fmt.Errorf("error marshaling VM info: %v", err)
+		return fmt.Errorf("error marshaling VM info: %v", err)
 	}
 
-	resp, err := client.Post(
-		fmt.Sprintf("%s%s/poll", controlPlaneURL, functionEndpoint),
+	resp, err := httpClient.Post(
+		fmt.Sprintf("%s%s", controlPlaneURL, registerEndpoint),
 		"application/json",
 		bytes.NewBuffer(data),
 	)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusNoContent {
-		// No new function to execute
-		return nil, nil
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
+
+	log.Printf("VM registered successfully with control plane")
+	return nil
+}
+
+// handleHealthCheck handles health check requests
+func handleHealthCheck(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("OK"))
+}
+
+// handleExecuteRequest handles function execution requests
+func handleExecuteRequest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Parse request body
+	var payload FunctionPayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("Received function execution request: %s (ID: %s)", payload.Name, payload.RequestID)
+
+	// Update VM status
+	vmInfo.Status = "busy"
+
+	// Execute the function asynchronously
+	go func() {
+		// Execute the function
+		result := executeFunction(&payload)
+
+		// Send the result back to the control plane
+		if err := sendResult(httpClient, result); err != nil {
+			log.Printf("Error sending result: %v", err)
+		}
+
+		// Mark VM as ready again
+		vmInfo.Status = "ready"
+
+		// Report VM status back to control plane
+		if err := reportVMStatus(); err != nil {
+			log.Printf("Error reporting VM status: %v", err)
+		}
+	}()
+
+	// Respond immediately to indicate the request was accepted
+	w.WriteHeader(http.StatusAccepted)
+	w.Write([]byte("Function execution started"))
+}
+
+// reportVMStatus reports the current VM status to the control plane
+func reportVMStatus() error {
+	data, err := json.Marshal(vmInfo)
+	if err != nil {
+		return fmt.Errorf("error marshaling VM info: %v", err)
+	}
+
+	resp, err := httpClient.Post(
+		fmt.Sprintf("%s%s", controlPlaneURL, registerEndpoint),
+		"application/json",
+		bytes.NewBuffer(data),
+	)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
-	var payload FunctionPayload
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return nil, fmt.Errorf("error decoding payload: %v", err)
-	}
-
-	return &payload, nil
+	return nil
 }
 
 // executeFunction prepares and executes the function code
@@ -172,6 +223,8 @@ func executeFunction(payload *FunctionPayload) *ExecutionResult {
 		FunctionID: payload.FunctionID,
 		StatusCode: 500, // Default to error
 	}
+
+	log.Printf("Starting execution of function %s (ID: %s)", payload.Name, payload.RequestID)
 
 	// Create a directory for this execution
 	execDir := filepath.Join(codeDir, payload.RequestID)
@@ -195,10 +248,16 @@ func executeFunction(payload *FunctionPayload) *ExecutionResult {
 	if err != nil {
 		result.ErrorMessage = fmt.Sprintf("Execution error: %v", err)
 		result.Output = output // Include any partial output
+		log.Printf("Function execution failed: %v", err)
 	} else {
 		result.StatusCode = 200
 		result.Output = output
+		log.Printf("Function execution completed successfully in %d ms", duration)
 	}
+
+	// Track memory usage if available
+	// This is a placeholder - in a real implementation, you would measure actual memory usage
+	result.MemoryUsage = 0
 
 	return result
 }
@@ -206,23 +265,33 @@ func executeFunction(payload *FunctionPayload) *ExecutionResult {
 // prepareFunction writes the function code and requirements to disk
 func prepareFunction(payload *FunctionPayload, execDir string) error {
 	// Write handler.py
-	if err := ioutil.WriteFile(filepath.Join(execDir, "handler.py"), []byte(payload.Code), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(execDir, "handler.py"), []byte(payload.Code), 0644); err != nil {
 		return fmt.Errorf("failed to write handler.py: %v", err)
 	}
 
 	// Write requirements.txt
-	if err := ioutil.WriteFile(filepath.Join(execDir, "requirements.txt"), []byte(payload.Requirements), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(execDir, "requirements.txt"), []byte(payload.Requirements), 0644); err != nil {
 		return fmt.Errorf("failed to write requirements.txt: %v", err)
 	}
 
 	// Write config file
-	if err := ioutil.WriteFile(filepath.Join(execDir, "faas.yaml"), []byte(payload.Config), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(execDir, "faas.yaml"), []byte(payload.Config), 0644); err != nil {
 		return fmt.Errorf("failed to write faas.yaml: %v", err)
 	}
 
 	// Install requirements if any
 	if payload.Requirements != "" {
-		cmd := exec.Command("pip", "install", "-r", filepath.Join(execDir, "requirements.txt"))
+		// Create a virtual environment
+		venvPath := filepath.Join(execDir, "venv")
+		createVenvCmd := exec.Command("python3", "-m", "venv", venvPath)
+		createVenvCmd.Dir = execDir
+		if output, err := createVenvCmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("failed to create virtual environment: %v, output: %s", err, output)
+		}
+
+		// Install requirements in the virtual environment
+		pipPath := filepath.Join(venvPath, "bin", "pip")
+		cmd := exec.Command(pipPath, "install", "-r", filepath.Join(execDir, "requirements.txt"))
 		cmd.Dir = execDir
 		if output, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("failed to install requirements: %v, output: %s", err, output)
@@ -251,57 +320,50 @@ func runFunction(payload *FunctionPayload, execDir string) (string, error) {
 			return "", fmt.Errorf("invalid entry point format: %s", entryPoint)
 		}
 
-		// Create a Python script to import and call the function
-		runnerScript := fmt.Sprintf(`
+		file, function := parts[0], parts[1]
+
+		// Create Python script to execute the function
+		executorCode := fmt.Sprintf(`
 import sys
 import json
-import os
-
-sys.path.append("%s")
-from %s import %s
+import traceback
+import %s
 
 try:
-    # Set environment variables
+    # Set up environment variables
     %s
     
-    # Call the function
-    result = %s()
-    print(json.dumps({"result": result}))
+    # Execute function
+    result = %s.%s()
+    print(result)
     sys.exit(0)
 except Exception as e:
-    print(json.dumps({"error": str(e)}))
+    print("Error:", str(e))
+    traceback.print_exc()
     sys.exit(1)
-`,
-			execDir,
-			parts[0],
-			parts[1],
-			generateEnvSetup(payload.Environment),
-			parts[1],
-		)
+`, file, generateEnvSetup(payload.Environment), file, function)
 
-		// Write the runner script
-		runnerPath := filepath.Join(execDir, "_runner.py")
-		if err := ioutil.WriteFile(runnerPath, []byte(runnerScript), 0755); err != nil {
-			return "", fmt.Errorf("failed to write runner script: %v", err)
+		// Write executor script
+		if err := os.WriteFile(filepath.Join(execDir, "executor.py"), []byte(executorCode), 0644); err != nil {
+			return "", fmt.Errorf("failed to write executor.py: %v", err)
 		}
 
-		// Execute the runner script
-		cmd = exec.CommandContext(ctx, "python3", runnerPath)
+		// Determine which Python interpreter to use
+		pythonInterpreter := "python3"
+		if payload.Requirements != "" {
+			// Use the virtual environment's Python interpreter if we created one
+			venvPath := filepath.Join(execDir, "venv")
+			pythonInterpreter = filepath.Join(venvPath, "bin", "python")
+		}
 
-	case "node", "nodejs", "node14", "node16":
-		// Similar implementation for Node.js
-		return "", fmt.Errorf("nodejs runtime not implemented yet")
-
+		// Execute the function
+		cmd = exec.CommandContext(ctx, pythonInterpreter, filepath.Join(execDir, "executor.py"))
 	default:
 		return "", fmt.Errorf("unsupported runtime: %s", payload.Runtime)
 	}
 
-	// Set up command environment
+	// Set working directory
 	cmd.Dir = execDir
-	cmd.Env = os.Environ()
-	for k, v := range payload.Environment {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
-	}
 
 	// Capture output
 	var stdout, stderr bytes.Buffer
@@ -310,30 +372,26 @@ except Exception as e:
 
 	// Run the command
 	err := cmd.Run()
-
-	// Check for timeout
-	if ctx.Err() == context.DeadlineExceeded {
-		return stdout.String() + "\n" + stderr.String(), fmt.Errorf("function execution timed out after %d seconds", payload.Timeout)
-	}
-
+	output := stdout.String()
 	if err != nil {
-		return stdout.String() + "\n" + stderr.String(), fmt.Errorf("execution failed: %v", err)
+		return output, fmt.Errorf("execution failed: %v, stderr: %s", err, stderr.String())
 	}
 
-	return stdout.String(), nil
+	return output, nil
 }
 
-// generateEnvSetup creates Python code to set environment variables
+// generateEnvSetup generates Python code to set environment variables
 func generateEnvSetup(env map[string]string) string {
 	if len(env) == 0 {
-		return "pass  # No environment variables to set"
+		return "pass"
 	}
 
 	var lines []string
 	for k, v := range env {
 		lines = append(lines, fmt.Sprintf("os.environ['%s'] = '%s'", k, v))
 	}
-	return strings.Join(lines, "\n")
+
+	return "import os\n" + strings.Join(lines, "\n")
 }
 
 // sendResult sends the execution result back to the control plane
@@ -342,6 +400,8 @@ func sendResult(client *http.Client, result *ExecutionResult) error {
 	if err != nil {
 		return fmt.Errorf("error marshaling result: %v", err)
 	}
+
+	log.Printf("Sending execution result for request ID: %s", result.RequestID)
 
 	resp, err := client.Post(
 		fmt.Sprintf("%s%s", controlPlaneURL, resultEndpoint),
@@ -354,9 +414,9 @@ func sendResult(client *http.Client, result *ExecutionResult) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := ioutil.ReadAll(resp.Body)
-		return fmt.Errorf("unexpected status code: %d, body: %s", resp.StatusCode, body)
+		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
+	log.Printf("Result sent successfully for request ID: %s", result.RequestID)
 	return nil
 }
