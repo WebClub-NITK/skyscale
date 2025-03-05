@@ -147,8 +147,8 @@ func (m *VMManager) createVM(isWarm bool) (*state.VM, error) {
 	config := VMConfig{
 		Memory: 128, // Default memory in MB
 		CPU:    1,   // Default CPU count
-		Kernel: "/home/bluequbit/Dev/faas/hello-vmlinux.bin",
-		RootFS: "/home/bluequbit/Dev/faas/hello-rootfs.ext4",
+		Kernel: "/home/bluequbit/Dev/faas/assets/hello-vmlinux.bin",
+		RootFS: "/home/bluequbit/Dev/faas/assets/hello-rootfs.ext4",
 	}
 
 	// Create context for VM operations
