@@ -41,6 +41,7 @@ type ExecutionContext struct {
 
 // ExecutionRequest represents a request to execute a function
 type ExecutionRequest struct {
+	ExecutionID  string
 	FunctionID   string
 	FunctionName string
 	Input        map[string]interface{}
@@ -104,11 +105,15 @@ func (s *Scheduler) worker() {
 
 // ScheduleExecution schedules a function for execution
 func (s *Scheduler) ScheduleExecution(functionID string, input map[string]interface{}, sync bool) (*ExecutionResponse, error) {
+	// Generate execution ID
+	executionID := uuid.New().String()
+
 	// Create execution request
 	req := &ExecutionRequest{
-		FunctionID: functionID,
-		Input:      input,
-		Sync:       sync,
+		ExecutionID: executionID,
+		FunctionID:  functionID,
+		Input:       input,
+		Sync:        sync,
 	}
 
 	// If synchronous, create response channel
@@ -125,9 +130,10 @@ func (s *Scheduler) ScheduleExecution(functionID string, input map[string]interf
 		return resp, nil
 	}
 
-	// If asynchronous, return immediately
+	// If asynchronous, return immediately with the execution ID
 	return &ExecutionResponse{
-		Status: "scheduled",
+		ExecutionID: executionID,
+		Status:      "scheduled",
 	}, nil
 }
 
@@ -145,8 +151,8 @@ func (s *Scheduler) ScheduleExecutionByName(functionName string, input map[strin
 
 // executeFunction executes a function on a VM
 func (s *Scheduler) executeFunction(req *ExecutionRequest) (*ExecutionResponse, error) {
-	// Generate execution ID
-	executionID := uuid.New().String()
+	// Use the execution ID from the request
+	executionID := req.ExecutionID
 
 	// Create execution context
 	ctx := &ExecutionContext{
