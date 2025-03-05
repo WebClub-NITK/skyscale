@@ -306,163 +306,42 @@ This means that it will be the responsiblity of the agent/deamon running insdie 
 
 Now till the invocation happens. The code is stored somewhere secured and handled by the control plane.
 
-The agent, when live, will poll the control plane for new code to be executed.
+The agent, will be listening for new code to be downloaded.
 
 ## Daemon Implementation
 
 The daemon will run inside the micro VM and will be responsible for:
 
-1. Polling the control plane for new code.
-2. Downloading the code securely.
-3. Executing the downloaded code.
+- Listening for new code to be downloaded.
+- Executing the downloaded code.
+- Returning the output of the code to the control plane.
 
-### Example Daemon Workflow
 
-1. **Initialization**: Start the daemon and establish a secure connection to the control plane.
-2. **Polling**: Periodically check for new code updates.
-3. **Download**: If new code is available, download it securely.
-4. **Execution**: Execute the downloaded code in a controlled environment.
-5. **Logging**: Log the execution results and any errors for monitoring.
 
-### Security Considerations
+## Scheduler
 
-- Ensure that the communication with the control plane is encrypted.
-- Validate the integrity of the downloaded code before execution.
+The scheduler will be responsible for:
 
-### **Detailed Control Plane Requirements**
+- Scheduling the code to be executed on the daemon.
+- Returning the output of the code to the control plane.
 
-#### **1. API Layer**
-- **Function Management API**:
-  - Register new functions with metadata
-  - Update existing functions
-  - Delete functions
-  - List available functions
-  - Get function status and configuration
-- **Invocation API**:
-  - Synchronous function invocation
-  - Asynchronous function invocation
-  - Get invocation results
-  - Cancel running invocations
-- **System Management API**:
-  - Health checks
-  - Resource utilization metrics
-  - System configuration updates
-  - VM pool management
+The scheduler will have the following functions - 
 
-#### **2. Authentication & Authorization**
-- **Security Requirements**:
-  - API key management
-  - Role-based access control (RBAC)
-  - Token-based authentication
-  - Request signing for secure communication
-- **Access Control**:
-  - Function-level permissions
-  - Resource usage quotas
-  - Rate limiting
+- handle synchronous requests - when the /invoke function api endpoint is called with sync as true
+- handle asynchronous requests - when the /invoke function api endpoint is called with sync as false
 
-#### **3. Function Registry**
-- **Storage Requirements**:
-  - Function code storage (compressed packages)
-  - Function metadata storage
-  - Version control and rollback capability
-- **Database Schema**:
-  ```sql
-  functions:
-    - id: uuid
-    - name: string
-    - runtime: string
-    - memory: integer
-    - timeout: integer
-    - created_at: timestamp
-    - updated_at: timestamp
-    - status: enum
-    - version: string
-  ```
+To handle the asynchronous requests, we will use a queue to store the requests.
 
-#### **4. VM Management**
-- **Lifecycle Operations**:
-  - VM creation and initialization
-  - VM health monitoring
-  - VM termination and cleanup
-  - Pre-warm pool management
-- **Resource Management**:
-  - CPU allocation
-  - Memory monitoring
-  - Network bandwidth control
-  - Disk space management
+The scheduler will be responsible for dequeueing the requests from the queue and scheduling them to the daemon, and returning the output of the code to the control plane.
 
-#### **5. Scheduler**
-- **Scheduling Capabilities**:
-  - Function placement optimization
-  - Load balancing across VMs
-  - Resource-aware scheduling
-  - Priority-based execution
-- **Queue Management**:
-  - Request queuing
-  - Backpressure handling
-  - Dead letter queues
-  - Retry mechanisms
 
-#### **6. Monitoring & Logging**
-- **Metrics Collection**:
-  - Function execution metrics
-  - VM performance metrics
-  - System health metrics
-  - Resource utilization
-- **Logging Requirements**:
-  - Function execution logs
-  - System operation logs
-  - Error tracking
-  - Audit trails
 
-#### **7. Communication Protocol**
-- **VM Communication**:
-  - Secure WebSocket connections
-  - gRPC for efficient communication
-  - Health check protocol
-  - Binary protocol for data transfer
-- **Agent Communication**:
-  ```go
-  type AgentMessage struct {
-    Type    string          // command, response, error
-    ID      string          // unique message identifier
-    Payload json.RawMessage // message content
-    Time    time.Time       // timestamp
-  }
-  ```
 
-#### **8. State Management**
-- **System State**:
-  - Active function executions
-  - VM pool status
-  - Resource allocation state
-  - System configuration
-- **Persistence Layer**:
-  - Database for long-term storage
-  - In-memory cache for hot data
-  - State synchronization
-  - Backup and recovery
 
-#### **9. Scaling & High Availability**
-- **Scalability Features**:
-  - Horizontal scaling of control plane
-  - Load distribution
-  - Data partitioning
-  - Cache distribution
-- **High Availability**:
-  - Leader election
-  - Failover mechanisms
-  - Data replication
-  - Service discovery
 
-#### **10. Integration Points**
-- **External Systems**:
-  - Metrics exporters (Prometheus)
-  - Log aggregators (ELK stack)
-  - Alert managers
-  - External storage systems
-- **API Integrations**:
-  - Webhook support
-  - Event streaming
-  - External triggers
-  - Service mesh integration
+
+
+
+
+
+
