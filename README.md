@@ -76,7 +76,6 @@ Here's a step-by-step plan to build **Skyscale**:
 - Implement a script for bootstrapping user-defined functions.
 
 #### **Step 4: Develop the Control Plane**
-![image](https://github.com/user-attachments/assets/231e5d75-a340-4d96-b9e2-a96d4eb7c26e)
 
 - **VM Orchestrator**:
   - Automate the lifecycle of Firecracker VMs (start, stop, terminate).
