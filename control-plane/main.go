@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"net/http"
 	"os"
 	"os/signal"
@@ -20,10 +21,18 @@ import (
 )
 
 func main() {
+	// Parse command-line flags
+	flag.Parse()
+
 	logger := logrus.New()
 	logger.SetOutput(os.Stdout)
 	logger.SetLevel(logrus.InfoLevel)
 	logger.Info("Starting Skyscale Control Plane")
+
+	// Check if running in test mode
+	if TestMode {
+		logger.Info("Running in TEST MODE with simulated host VM")
+	}
 
 	// Initialize components
 	stateManager, err := state.NewStateManager(logger)
@@ -41,6 +50,11 @@ func main() {
 		logger.Fatalf("Failed to initialize VM manager: %v", err)
 	}
 
+	// Set up test environment if in test mode
+	if err := SetupTestEnvironment(vmManager, logger); err != nil {
+		logger.Fatalf("Failed to set up test environment: %v", err)
+	}
+
 	functionScheduler, err := scheduler.NewScheduler(vmManager, functionRegistry, stateManager, logger)
 	if err != nil {
 		logger.Fatalf("Failed to initialize scheduler: %v", err)
@@ -55,7 +69,7 @@ func main() {
 	router := mux.NewRouter()
 
 	// Register API routes
-	apiHandler := api.NewAPIHandler(functionRegistry, vmManager, functionScheduler, authManager, logger)
+	apiHandler := api.NewAPIHandler(functionRegistry, vmManager, functionScheduler, authManager, stateManager, logger)
 	apiHandler.RegisterRoutes(router)
 
 	// Add metrics endpoint
@@ -66,6 +80,17 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
 	})
+
+	// Add test mode endpoint
+	if TestMode {
+		router.HandleFunc("/test/status", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"test_mode": true, "host_vm_id": "` + TestHostVMID + `"}`))
+		})
+		//add a test/invoke endpoint
+		
+	}
 
 	// Start HTTP server
 	srv := &http.Server{
