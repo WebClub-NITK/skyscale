@@ -3,3 +3,4 @@ assets
 .env
 firecrackerlab
 control-plane/skyscale.db
+scripts/firecrackerlab
