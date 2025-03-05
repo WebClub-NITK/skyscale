@@ -1,6 +1,9 @@
 package scheduler
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -19,346 +22,497 @@ type Scheduler struct {
 	functionRegistry *registry.FunctionRegistry
 	stateManager     *state.StateManager
 	logger           *logrus.Logger
-	executions       map[string]*ExecutionContext
+	asyncQueue       chan *ExecutionRequest
 	mu               sync.Mutex
-	queue            chan *ExecutionRequest
-	workers          int
-}
-
-// ExecutionContext tracks the execution of a function
-type ExecutionContext struct {
-	ID         string
-	FunctionID string
-	VMID       string
-	Status     string
-	StartTime  time.Time
-	EndTime    time.Time
-	Duration   int64
-	Logs       string
-	Error      string
-	Result     string
+	activeExecutions map[string]*ExecutionContext
 }
 
 // ExecutionRequest represents a request to execute a function
 type ExecutionRequest struct {
-	ExecutionID  string
 	FunctionID   string
 	FunctionName string
 	Input        map[string]interface{}
 	Sync         bool
-	ResponseChan chan *ExecutionResponse
+	RequestID    string
 }
 
-// ExecutionResponse represents the response from a function execution
-type ExecutionResponse struct {
-	ExecutionID string
-	Status      string
-	Result      string
-	Error       string
-	Duration    int64
+// ExecutionContext tracks the context of a function execution
+type ExecutionContext struct {
+	RequestID  string
+	FunctionID string
+	VMID       string
+	StartTime  time.Time
+	Sync       bool
+	Result     chan *ExecutionResult
 }
 
-// NewScheduler creates a new scheduler
+// ExecutionResult represents the result of a function execution
+type ExecutionResult struct {
+	RequestID    string                 `json:"request_id"`
+	FunctionID   string                 `json:"function_id"`
+	StatusCode   int                    `json:"status_code"`
+	Output       map[string]interface{} `json:"output,omitempty"`
+	ErrorMessage string                 `json:"error_message,omitempty"`
+	Duration     int64                  `json:"duration_ms"`
+	MemoryUsage  int64                  `json:"memory_usage_kb,omitempty"`
+}
+
+// NewScheduler creates a new function scheduler
 func NewScheduler(vmManager *vm.VMManager, functionRegistry *registry.FunctionRegistry, stateManager *state.StateManager, logger *logrus.Logger) (*Scheduler, error) {
 	scheduler := &Scheduler{
 		vmManager:        vmManager,
 		functionRegistry: functionRegistry,
 		stateManager:     stateManager,
 		logger:           logger,
-		executions:       make(map[string]*ExecutionContext),
-		queue:            make(chan *ExecutionRequest, 100),
-		workers:          10, // Default number of workers
+		asyncQueue:       make(chan *ExecutionRequest, 100), // Buffer size of 100
+		activeExecutions: make(map[string]*ExecutionContext),
 	}
 
-	// Start worker pool
-	for i := 0; i < scheduler.workers; i++ {
-		go scheduler.worker()
+	// Start the async worker pool
+	for i := 0; i < 5; i++ { // Start 5 worker goroutines
+		go scheduler.asyncWorker()
 	}
+
+	// Start the execution monitor
+	go scheduler.monitorExecutions()
 
 	return scheduler, nil
 }
 
-// worker processes execution requests from the queue
-func (s *Scheduler) worker() {
-	for req := range s.queue {
-		s.logger.Infof("Processing execution request for function: %s", req.FunctionID)
-
-		// Execute the function
-		resp, err := s.executeFunction(req)
-		if err != nil {
-			s.logger.Errorf("Failed to execute function: %v", err)
-			if req.ResponseChan != nil {
-				req.ResponseChan <- &ExecutionResponse{
-					Status: "error",
-					Error:  err.Error(),
-				}
-			}
-			continue
-		}
-
-		// Send response if synchronous
-		if req.Sync && req.ResponseChan != nil {
-			req.ResponseChan <- resp
-		}
+// ScheduleExecution schedules a function for execution by ID
+func (s *Scheduler) ScheduleExecution(functionID string, input map[string]interface{}, sync bool) (*ExecutionResult, error) {
+	// Validate function exists
+	_, err := s.functionRegistry.GetFunction(functionID)
+	if err != nil {
+		return nil, fmt.Errorf("function not found: %v", err)
 	}
-}
-
-// ScheduleExecution schedules a function for execution
-func (s *Scheduler) ScheduleExecution(functionID string, input map[string]interface{}, sync bool) (*ExecutionResponse, error) {
-	// Generate execution ID
-	executionID := uuid.New().String()
 
 	// Create execution request
-	req := &ExecutionRequest{
-		ExecutionID: executionID,
-		FunctionID:  functionID,
-		Input:       input,
-		Sync:        sync,
+	requestID := uuid.New().String()
+	request := &ExecutionRequest{
+		FunctionID: functionID,
+		Input:      input,
+		Sync:       sync,
+		RequestID:  requestID,
 	}
 
-	// If synchronous, create response channel
+	// Handle based on sync/async mode
 	if sync {
-		req.ResponseChan = make(chan *ExecutionResponse, 1)
+		// For synchronous requests, execute directly and wait for result
+		return s.executeFunction(request)
+	} else {
+		// For asynchronous requests, queue the execution and return immediately
+		select {
+		case s.asyncQueue <- request:
+			// Successfully queued
+			return &ExecutionResult{
+				RequestID:  requestID,
+				FunctionID: functionID,
+				StatusCode: 202, // Accepted
+			}, nil
+		default:
+			// Queue is full
+			return nil, errors.New("execution queue is full, try again later")
+		}
 	}
-
-	// Add request to queue
-	s.queue <- req
-
-	// If synchronous, wait for response
-	if sync {
-		resp := <-req.ResponseChan
-		return resp, nil
-	}
-
-	// If asynchronous, return immediately with the execution ID
-	return &ExecutionResponse{
-		ExecutionID: executionID,
-		Status:      "scheduled",
-	}, nil
 }
 
 // ScheduleExecutionByName schedules a function for execution by name
-func (s *Scheduler) ScheduleExecutionByName(functionName string, input map[string]interface{}, sync bool) (*ExecutionResponse, error) {
-	// Get function by name
+func (s *Scheduler) ScheduleExecutionByName(functionName string, input map[string]interface{}, sync bool) (*ExecutionResult, error) {
+	// Validate function exists
 	function, err := s.functionRegistry.GetFunctionByName(functionName)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("function not found: %v", err)
 	}
 
-	// Schedule execution
-	return s.ScheduleExecution(function.ID, input, sync)
+	// Create execution request
+	requestID := uuid.New().String()
+	request := &ExecutionRequest{
+		FunctionID:   function.ID,
+		FunctionName: functionName,
+		Input:        input,
+		Sync:         sync,
+		RequestID:    requestID,
+	}
+
+	// Handle based on sync/async mode
+	if sync {
+		// For synchronous requests, execute directly and wait for result
+		return s.executeFunction(request)
+	} else {
+		// For asynchronous requests, queue the execution and return immediately
+		select {
+		case s.asyncQueue <- request:
+			// Successfully queued
+			return &ExecutionResult{
+				RequestID:  requestID,
+				FunctionID: function.ID,
+				StatusCode: 202, // Accepted
+			}, nil
+		default:
+			// Queue is full
+			return nil, errors.New("execution queue is full, try again later")
+		}
+	}
 }
 
-// executeFunction executes a function on a VM
-func (s *Scheduler) executeFunction(req *ExecutionRequest) (*ExecutionResponse, error) {
-	// Use the execution ID from the request
-	executionID := req.ExecutionID
-
-	// Create execution context
-	ctx := &ExecutionContext{
-		ID:         executionID,
-		FunctionID: req.FunctionID,
-		Status:     "pending",
-		StartTime:  time.Now(),
-	}
-
-	// Store execution context
+// GetExecutionResult retrieves the result of an asynchronous execution
+func (s *Scheduler) GetExecutionResult(requestID string) (*ExecutionResult, error) {
+	// Check if execution is still active
 	s.mu.Lock()
-	s.executions[executionID] = ctx
+	_, active := s.activeExecutions[requestID]
 	s.mu.Unlock()
 
-	// Get function
-	function, err := s.functionRegistry.GetFunction(req.FunctionID)
+	if active {
+		// Execution is still in progress
+		return &ExecutionResult{
+			RequestID:  requestID,
+			StatusCode: 102, // Processing
+		}, nil
+	}
+
+	// Check if execution result is in the database
+	execution, err := s.stateManager.GetExecution(requestID)
 	if err != nil {
-		ctx.Status = "error"
-		ctx.Error = fmt.Sprintf("Function not found: %v", err)
-		return s.finalizeExecution(ctx)
+		return nil, fmt.Errorf("execution not found: %v", err)
 	}
 
-	// Get function code
-	functionCode, err := s.functionRegistry.GetFunctionCode(req.FunctionID)
-	if err != nil {
-		ctx.Status = "error"
-		ctx.Error = fmt.Sprintf("Failed to get function code: %v", err)
-		return s.finalizeExecution(ctx)
-	}
-
-	// Get VM
-	vm, err := s.vmManager.GetVM()
-	if err != nil {
-		ctx.Status = "error"
-		ctx.Error = fmt.Sprintf("Failed to get VM: %v", err)
-		return s.finalizeExecution(ctx)
-	}
-
-	// Update execution context
-	ctx.VMID = vm.ID
-	ctx.Status = "running"
-
-	// Track active execution
-	s.stateManager.TrackActiveExecution(executionID, vm.ID)
-
-	// Create execution in state manager
-	execution := &state.Execution{
-		ID:         executionID,
-		FunctionID: req.FunctionID,
-		Status:     "running",
-		StartTime:  ctx.StartTime,
-		VMID:       vm.ID,
-	}
-	if err := s.stateManager.SaveExecution(execution); err != nil {
-		s.logger.Errorf("Failed to save execution: %v", err)
-	}
-
-	// Execute function on VM
-	result, err := s.executeOnVM(vm, function, functionCode, req.Input)
-	if err != nil {
-		ctx.Status = "error"
-		ctx.Error = fmt.Sprintf("Execution failed: %v", err)
-
-		// Return VM to pool
-		if err := s.vmManager.ReturnVM(vm.ID); err != nil {
-			s.logger.Errorf("Failed to return VM to pool: %v", err)
+	// Parse the output
+	var output map[string]interface{}
+	if execution.Logs != "" {
+		if err := json.Unmarshal([]byte(execution.Logs), &output); err != nil {
+			s.logger.Warnf("Failed to parse execution output: %v", err)
 		}
-
-		return s.finalizeExecution(ctx)
 	}
 
-	// Update execution context
-	ctx.Status = "completed"
-	ctx.Result = result
-	ctx.EndTime = time.Now()
-	ctx.Duration = ctx.EndTime.Sub(ctx.StartTime).Milliseconds()
-
-	// Return VM to pool
-	if err := s.vmManager.ReturnVM(vm.ID); err != nil {
-		s.logger.Errorf("Failed to return VM to pool: %v", err)
-	}
-
-	// Untrack active execution
-	s.stateManager.UntrackActiveExecution(executionID)
-
-	// Finalize execution
-	return s.finalizeExecution(ctx)
-}
-
-// executeOnVM executes a function on a VM
-func (s *Scheduler) executeOnVM(vm *state.VM, function *registry.FunctionMetadata, code *registry.FunctionCode, input map[string]interface{}) (string, error) {
-	// In a real implementation, this would communicate with the VM agent
-	// For now, we'll simulate execution with a simple HTTP request
-
-	// Construct URL
-	url := fmt.Sprintf("http://%s:8080/api/execute", vm.IP)
-
-	// Create HTTP client with timeout
-	client := &http.Client{
-		Timeout: time.Duration(function.Timeout) * time.Second,
-	}
-
-	// Create request
-	req, err := http.NewRequest("POST", url, nil)
-	if err != nil {
-		return "", err
-	}
-
-	// Set headers
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Function-ID", function.ID)
-
-	// Execute request
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	// Check response status
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("execution failed with status: %s", resp.Status)
-	}
-
-	// For now, return a simulated result
-	return "Function executed successfully", nil
-}
-
-// finalizeExecution finalizes an execution and returns the response
-func (s *Scheduler) finalizeExecution(ctx *ExecutionContext) (*ExecutionResponse, error) {
-	// Update execution in state manager
-	execution := &state.Execution{
-		ID:         ctx.ID,
-		FunctionID: ctx.FunctionID,
-		Status:     ctx.Status,
-		StartTime:  ctx.StartTime,
-		EndTime:    ctx.EndTime,
-		Duration:   ctx.Duration,
-		VMID:       ctx.VMID,
-		Logs:       ctx.Logs,
-		Error:      ctx.Error,
-	}
-	if err := s.stateManager.SaveExecution(execution); err != nil {
-		s.logger.Errorf("Failed to save execution: %v", err)
-	}
-
-	// Return response
-	return &ExecutionResponse{
-		ExecutionID: ctx.ID,
-		Status:      ctx.Status,
-		Result:      ctx.Result,
-		Error:       ctx.Error,
-		Duration:    ctx.Duration,
+	// Return the result
+	return &ExecutionResult{
+		RequestID:    requestID,
+		FunctionID:   execution.FunctionID,
+		StatusCode:   200,
+		Output:       output,
+		ErrorMessage: execution.Error,
+		Duration:     execution.Duration,
 	}, nil
 }
 
-// GetExecution gets an execution by ID
-func (s *Scheduler) GetExecution(id string) (*ExecutionContext, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	ctx, exists := s.executions[id]
-	if !exists {
-		// Try to get from state manager
-		execution, err := s.stateManager.GetExecution(id)
-		if err != nil {
-			return nil, err
-		}
-
-		ctx = &ExecutionContext{
-			ID:         execution.ID,
-			FunctionID: execution.FunctionID,
-			VMID:       execution.VMID,
-			Status:     execution.Status,
-			StartTime:  execution.StartTime,
-			EndTime:    execution.EndTime,
-			Duration:   execution.Duration,
-			Logs:       execution.Logs,
-			Error:      execution.Error,
-		}
+// executeFunction executes a function on a VM
+func (s *Scheduler) executeFunction(request *ExecutionRequest) (*ExecutionResult, error) {
+	// Get function metadata
+	function, err := s.functionRegistry.GetFunction(request.FunctionID)
+	if err != nil {
+		return nil, fmt.Errorf("function not found: %v", err)
 	}
 
-	return ctx, nil
+	// Get function code
+	code, err := s.functionRegistry.GetFunctionCode(request.FunctionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get function code: %v", err)
+	}
+
+	// Create execution record
+	execution := &state.Execution{
+		ID:         request.RequestID,
+		FunctionID: request.FunctionID,
+		Status:     "pending",
+		StartTime:  time.Now(),
+	}
+	if err := s.stateManager.SaveExecution(execution); err != nil {
+		s.logger.Errorf("Failed to save execution record: %v", err)
+	}
+
+	// Allocate a VM for execution
+	vmInstance, err := s.vmManager.GetOrCreateTestHostVM()
+	if err != nil {
+		execution.Status = "failed"
+		execution.Error = fmt.Sprintf("Failed to allocate VM: %v", err)
+		execution.EndTime = time.Now()
+		s.stateManager.SaveExecution(execution)
+		return nil, fmt.Errorf("failed to allocate VM: %v", err)
+	}
+
+	// Track the execution
+	resultChan := make(chan *ExecutionResult, 1)
+	context := &ExecutionContext{
+		RequestID:  request.RequestID,
+		FunctionID: request.FunctionID,
+		VMID:       vmInstance.ID,
+		StartTime:  time.Now(),
+		Sync:       request.Sync,
+		Result:     resultChan,
+	}
+
+	s.mu.Lock()
+	s.activeExecutions[request.RequestID] = context
+	s.mu.Unlock()
+
+	// Track in state manager
+	s.stateManager.TrackActiveExecution(request.RequestID, vmInstance.ID)
+
+	// Execute the function on the VM
+	go func() {
+		defer func() {
+			// Cleanup
+			s.mu.Lock()
+			delete(s.activeExecutions, request.RequestID)
+			s.mu.Unlock()
+			s.stateManager.UntrackActiveExecution(request.RequestID)
+			close(resultChan)
+		}()
+
+		// Update execution status
+		execution.Status = "running"
+		execution.VMID = vmInstance.ID
+		s.stateManager.SaveExecution(execution)
+
+		// Create payload for daemon
+		payload := map[string]interface{}{
+			"function_id":  request.FunctionID,
+			"name":         function.Name,
+			"code":         code.Code,
+			"requirements": code.Requirements,
+			"config":       code.Config,
+			"runtime":      function.Runtime,
+			"entry_point":  "handler.handler", // Default entry point
+			"environment":  map[string]string{},
+			"request_id":   request.RequestID,
+			"timeout":      function.Timeout,
+			"memory":       function.Memory,
+			"version":      function.Version,
+			"input":        request.Input,
+		}
+
+		// Convert payload to JSON
+		payloadJSON, err := json.Marshal(payload)
+		if err != nil {
+			s.logger.Errorf("Failed to marshal function payload: %v", err)
+
+			// Create error result
+			errorResult := &ExecutionResult{
+				RequestID:    request.RequestID,
+				FunctionID:   request.FunctionID,
+				StatusCode:   500,
+				ErrorMessage: fmt.Sprintf("Failed to marshal function payload: %v", err),
+				Duration:     time.Since(context.StartTime).Milliseconds(),
+			}
+
+			// Update execution record
+			execution.Status = "failed"
+			execution.Error = errorResult.ErrorMessage
+			execution.EndTime = time.Now()
+			execution.Duration = errorResult.Duration
+			s.stateManager.SaveExecution(execution)
+
+			// Return VM to pool
+			if err := s.vmManager.ReturnVM(vmInstance.ID); err != nil {
+				s.logger.Errorf("Failed to return VM to pool: %v", err)
+			}
+
+			// Send result to channel
+			resultChan <- errorResult
+			return
+		}
+
+		// Create HTTP client with timeout
+		client := &http.Client{
+			Timeout: time.Duration(function.Timeout+5) * time.Second, // Add 5 seconds buffer
+		}
+
+		// Construct daemon URL
+		daemonURL := fmt.Sprintf("http://%s:8081/execute", vmInstance.IP)
+		s.logger.Infof("Sending execution request to daemon at %s", daemonURL)
+
+		// Send request to daemon
+		resp, err := client.Post(daemonURL, "application/json", bytes.NewBuffer(payloadJSON))
+
+		if err != nil {
+			s.logger.Errorf("Failed to send request to daemon: %v", err)
+
+			// Create error result
+			errorResult := &ExecutionResult{
+				RequestID:    request.RequestID,
+				FunctionID:   request.FunctionID,
+				StatusCode:   500,
+				ErrorMessage: fmt.Sprintf("Failed to send request to daemon: %v", err),
+				Duration:     time.Since(context.StartTime).Milliseconds(),
+			}
+
+			// Update execution record
+			execution.Status = "failed"
+			execution.Error = errorResult.ErrorMessage
+			execution.EndTime = time.Now()
+			execution.Duration = errorResult.Duration
+			s.stateManager.SaveExecution(execution)
+
+			// Return VM to pool
+			// if err := s.vmManager.ReturnVM(vmInstance.ID); err != nil {
+			// 	s.logger.Errorf("Failed to return VM to pool: %v", err)
+			// }
+
+			// Send result to channel
+			resultChan <- errorResult
+			return
+		}
+		defer resp.Body.Close()
+
+		// For synchronous requests, we need to wait for the result
+		if request.Sync {
+			// The daemon will send the result to the control plane via a callback
+			// We need to poll for the result
+			maxRetries := 30 // Maximum number of retries
+			retryInterval := 500 * time.Millisecond
+
+			for i := 0; i < maxRetries; i++ {
+				// Wait before checking
+				time.Sleep(retryInterval)
+
+				// Check if execution is complete
+				execResult, err := s.stateManager.GetExecution(request.RequestID)
+				if err != nil {
+					continue
+				}
+
+				if execResult.Status == "completed" || execResult.Status == "failed" {
+					// Execution is complete, parse the result
+					var output map[string]interface{}
+					if execResult.Logs != "" {
+						if err := json.Unmarshal([]byte(execResult.Logs), &output); err != nil {
+							s.logger.Warnf("Failed to parse execution output: %v", err)
+						}
+					}
+
+					// Create result
+					result := &ExecutionResult{
+						RequestID:    request.RequestID,
+						FunctionID:   request.FunctionID,
+						StatusCode:   200,
+						Output:       output,
+						ErrorMessage: execResult.Error,
+						Duration:     execResult.Duration,
+					}
+
+					if execResult.Status == "failed" {
+						result.StatusCode = 500
+					}
+
+					// Return VM to pool
+					if err := s.vmManager.ReturnVM(vmInstance.ID); err != nil {
+						s.logger.Errorf("Failed to return VM to pool: %v", err)
+					}
+
+					// Send result to channel
+					resultChan <- result
+					return
+				}
+			}
+
+			// If we get here, the execution timed out
+			s.logger.Warnf("Execution timed out after %d retries", maxRetries)
+
+			// Create timeout result
+			timeoutResult := &ExecutionResult{
+				RequestID:    request.RequestID,
+				FunctionID:   request.FunctionID,
+				StatusCode:   504, // Gateway Timeout
+				ErrorMessage: "Execution timed out waiting for result",
+				Duration:     time.Since(context.StartTime).Milliseconds(),
+			}
+
+			// Update execution record
+			execution.Status = "timeout"
+			execution.Error = timeoutResult.ErrorMessage
+			execution.EndTime = time.Now()
+			execution.Duration = timeoutResult.Duration
+			s.stateManager.SaveExecution(execution)
+
+			// Return VM to pool
+			if err := s.vmManager.ReturnVM(vmInstance.ID); err != nil {
+				s.logger.Errorf("Failed to return VM to pool: %v", err)
+			}
+
+			// Send result to channel
+			resultChan <- timeoutResult
+			return
+		} else {
+			// For asynchronous requests, we just acknowledge that the execution has started
+			// The daemon will send the result to the control plane via a callback
+
+			// Create accepted result
+			acceptedResult := &ExecutionResult{
+				RequestID:  request.RequestID,
+				FunctionID: request.FunctionID,
+				StatusCode: 202, // Accepted
+			}
+
+			// Send result to channel
+			resultChan <- acceptedResult
+		}
+	}()
+
+	// For synchronous requests, wait for the result
+	if request.Sync {
+		result := <-resultChan
+		return result, nil
+	}
+
+	// For asynchronous requests, return immediately
+	return &ExecutionResult{
+		RequestID:  request.RequestID,
+		FunctionID: request.FunctionID,
+		StatusCode: 202, // Accepted
+	}, nil
 }
 
-// ListExecutions lists all executions for a function
-func (s *Scheduler) ListExecutions(functionID string) ([]*ExecutionContext, error) {
-	executions, err := s.stateManager.ListExecutions(functionID)
-	if err != nil {
-		return nil, err
-	}
-
-	result := make([]*ExecutionContext, len(executions))
-	for i, execution := range executions {
-		result[i] = &ExecutionContext{
-			ID:         execution.ID,
-			FunctionID: execution.FunctionID,
-			VMID:       execution.VMID,
-			Status:     execution.Status,
-			StartTime:  execution.StartTime,
-			EndTime:    execution.EndTime,
-			Duration:   execution.Duration,
-			Logs:       execution.Logs,
-			Error:      execution.Error,
+// asyncWorker processes asynchronous execution requests
+func (s *Scheduler) asyncWorker() {
+	for request := range s.asyncQueue {
+		s.logger.Infof("Processing async request %s for function %s", request.RequestID, request.FunctionID)
+		_, err := s.executeFunction(request)
+		if err != nil {
+			s.logger.Errorf("Failed to execute async function: %v", err)
 		}
 	}
+}
 
-	return result, nil
+// monitorExecutions monitors active executions for timeouts
+func (s *Scheduler) monitorExecutions() {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		<-ticker.C
+		s.mu.Lock()
+		now := time.Now()
+		for requestID, context := range s.activeExecutions {
+			// Check if execution has been running for too long (more than 5 minutes)
+			if now.Sub(context.StartTime) > 5*time.Minute {
+				s.logger.Warnf("Execution %s has been running for too long, marking as timed out", requestID)
+
+				// Get the execution from the state manager
+				execution, err := s.stateManager.GetExecution(requestID)
+				if err != nil {
+					s.logger.Errorf("Failed to get execution %s: %v", requestID, err)
+					continue
+				}
+
+				// Update execution status
+				execution.Status = "timeout"
+				execution.Error = "Execution timed out"
+				execution.EndTime = now
+				execution.Duration = now.Sub(context.StartTime).Milliseconds()
+				s.stateManager.SaveExecution(execution)
+
+				// Clean up the VM - since terminateVM is unexported, we'll use ReturnVM instead
+				// This isn't ideal but will work until a proper public termination method is available
+				if err := s.vmManager.ReturnVM(context.VMID); err != nil {
+					s.logger.Errorf("Failed to clean up VM %s: %v", context.VMID, err)
+				}
+
+				// Remove from active executions
+				delete(s.activeExecutions, requestID)
+				s.stateManager.UntrackActiveExecution(requestID)
+			}
+		}
+		s.mu.Unlock()
+	}
 }

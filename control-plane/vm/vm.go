@@ -351,3 +351,64 @@ func (m *VMManager) ListVMs() ([]state.VM, error) {
 func (m *VMManager) GetVMByID(id string) (*state.VM, error) {
 	return m.stateManager.GetVM(id)
 }
+
+// CreateTestHostVM creates a test VM that represents the host machine for testing
+func (m *VMManager) CreateTestHostVM() (*state.VM, error) {
+	m.logger.Info("Creating test host VM for testing")
+
+	// Generate VM ID
+	id := "host-vm-test"
+
+	// Use the host machine's IP (localhost)
+	ip := "127.0.0.1"
+
+	// Create VM in state manager
+	vm := &state.VM{
+		ID:        id,
+		Status:    "ready",
+		IP:        ip,
+		CreatedAt: time.Now(),
+		LastUsed:  time.Now(),
+		Memory:    1024, // 1GB
+		CPU:       2,    // 2 cores
+		IsWarm:    true,
+	}
+
+	if err := m.stateManager.SaveVM(vm); err != nil {
+		return nil, fmt.Errorf("failed to save test VM to state manager: %v", err)
+	}
+
+	// Create VM instance (without actual Firecracker machine)
+	vmInstance := &VMInstance{
+		ID:        id,
+		IP:        ip,
+		Machine:   nil, // No actual Firecracker machine
+		Status:    "ready",
+		CreatedAt: vm.CreatedAt,
+		LastUsed:  vm.LastUsed,
+		Memory:    vm.Memory,
+		CPU:       vm.CPU,
+		IsWarm:    true,
+	}
+
+	// Store VM instance
+	m.mu.Lock()
+	m.vms[id] = vmInstance
+	m.mu.Unlock()
+
+	m.logger.Infof("Created test host VM with ID %s and IP %s", id, ip)
+	return vm, nil
+}
+
+// GetOrCreateTestHostVM gets the test host VM if it exists, or creates it if it doesn't
+func (m *VMManager) GetOrCreateTestHostVM() (*state.VM, error) {
+	// Check if test host VM already exists
+	vm, err := m.stateManager.GetVM("host-vm-test")
+	if err == nil {
+		// VM exists, return it
+		return vm, nil
+	}
+
+	// VM doesn't exist, create it
+	return m.CreateTestHostVM()
+}
