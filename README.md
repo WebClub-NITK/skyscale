@@ -14,6 +14,10 @@ rn we will only support python
 - The agent will be written in Go and only the binary will be copied to the VM.
 
 
+![Architecture Diagram](arch.png)
+
+
+
 Here's a step-by-step plan to build **Skyscale**:
 
 ---
