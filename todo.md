@@ -190,7 +190,7 @@ Let's break down the lifecycle and internal working of **Skyscale** using the ex
       - The control plane stores the package in a central repository (e.g., an S3 bucket or a file system).
     - **Step 3: VM Image Preparation**:
       - A base Firecracker VM image is cloned.
-      - The function package is injected into the VM image at a predefined path (e.g., `/home/hello_fire`).
+      - The function package is injected into the VM image at a predefined path (e.g., `/home/hello_fire`) at runtine when the function is invoked.
       - A lightweight Python server is pre-installed in the VM to execute the function.
 
 ---

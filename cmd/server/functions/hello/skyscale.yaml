@@ -1,3 +1,0 @@
-name: hello
-runtime: python3.9
-entrypoint: handler.handler
