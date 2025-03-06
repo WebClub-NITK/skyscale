@@ -1,3 +1,9 @@
+// Package state provides functionality for managing the state of the control plane.
+//
+// The StateManager manages the database and cache for the control plane.
+// It provides methods for saving, retrieving, and deleting functions, executions, and VMs.
+// It also provides a method for tracking active executions.
+
 package state
 
 import (

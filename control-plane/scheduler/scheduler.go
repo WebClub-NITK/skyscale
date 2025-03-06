@@ -1,3 +1,18 @@
+// Package scheduler provides functionality for managing function execution in the FaaS platform.
+//
+// The scheduler is responsible for:
+// - Managing function execution requests (both synchronous and asynchronous)
+// - Allocating VMs for function execution
+// - Tracking execution state and results
+// - Handling timeouts and errors
+// - Providing an interface to retrieve execution results
+//
+// It works with the VMManager to allocate resources, the FunctionRegistry to retrieve
+// function metadata and code, and the StateManager to persist execution state.
+//
+// The scheduler implements a worker pool pattern for handling asynchronous requests
+// and includes monitoring capabilities to detect and handle stalled executions.
+
 package scheduler
 
 import (

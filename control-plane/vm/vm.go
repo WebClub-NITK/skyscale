@@ -1,3 +1,12 @@
+
+// Package vm provides functionality for managing Firecracker micro-VMs.
+//
+// The VMManager manages the lifecycle of Firecracker micro-VMs, including:
+// - Creating new VMs
+// - Returning VMs to the warm pool
+// - Terminating VMs
+
+
 package vm
 
 import (

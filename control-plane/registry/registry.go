@@ -1,3 +1,11 @@
+
+// Package registry provides functionality for managing function metadata and code.
+//
+// The FunctionRegistry manages the registration, updating, and retrieval of functions.
+// It also handles the storage and retrieval of function code and metadata.
+//
+// The registry is used by the scheduler to allocate VMs for function execution,
+
 package registry
 
 import (
