@@ -1,11 +1,9 @@
-
 // Package vm provides functionality for managing Firecracker micro-VMs.
 //
 // The VMManager manages the lifecycle of Firecracker micro-VMs, including:
 // - Creating new VMs
 // - Returning VMs to the warm pool
 // - Terminating VMs
-
 
 package vm
 
@@ -108,6 +106,8 @@ func (m *VMManager) manageWarmPool() {
 					m.logger.Warnf("Warm pool is full, cleaning up VM %s", vm.ID)
 					m.terminateVM(vm.ID)
 				}
+			} else {
+				m.logger.Infof("Warm pool size: %d/%d, no need to create new warm VM", currentSize, m.warmPoolSize)
 			}
 		}
 	}
@@ -146,18 +146,14 @@ func (m *VMManager) createVM(isWarm bool) (*state.VM, error) {
 		return nil, err
 	}
 
-	// Assign IP address
-	ip, err := m.assignIP()
-	if err != nil {
-		return nil, err
-	}
-
 	// Create VM configuration
 	config := VMConfig{
 		Memory: 128, // Default memory in MB
 		CPU:    1,   // Default CPU count
-		Kernel: "/home/bluequbit/Dev/faas/assets/hello-vmlinux.bin",
-		RootFS: "/home/bluequbit/Dev/faas/assets/hello-rootfs.ext4",
+		Kernel: "/home/bluequbit/Dev/faas/assets/vmlinux-5.10.225",
+		RootFS: "/home/bluequbit/Dev/faas/assets/ubuntu-22.04.ext4",
+		// Kernel: "/home/bluequbit/Dev/faas/assets/hello-vmlinux.bin",
+		// RootFS: "/home/bluequbit/Dev/faas/assets/hello-rootfs.ext4",
 	}
 
 	// Create context for VM operations
@@ -177,11 +173,21 @@ func (m *VMManager) createVM(isWarm bool) (*state.VM, error) {
 				PathOnHost:   firecracker.String(config.RootFS),
 				IsRootDevice: firecracker.Bool(true),
 				IsReadOnly:   firecracker.Bool(false),
-			},
+			},	
 		},
 		MachineCfg: models.MachineConfiguration{
 			VcpuCount:  firecracker.Int64(int64(config.CPU)),
 			MemSizeMib: firecracker.Int64(int64(config.Memory)),
+		},
+		NetworkInterfaces: firecracker.NetworkInterfaces{
+			firecracker.NetworkInterface{
+				// finds the CNI configuration in /etc/cni/conf.d by default
+				CNIConfiguration: &firecracker.CNIConfiguration{
+					NetworkName: "ptp-net", // matches the name in your CNI config file
+					IfName:      "veth0", // changed from tap0 to veth0 for ptp plugin
+				},
+				AllowMMDS: true,
+			},
 		},
 		VMID:        id,
 		LogLevel:    "Debug",
@@ -214,10 +220,15 @@ func (m *VMManager) createVM(isWarm bool) (*state.VM, error) {
 		return nil, fmt.Errorf("failed to start machine: %v", err)
 	}
 
+	// Get the IP address from the network configuration
+	ipAddress := machine.Cfg.NetworkInterfaces[0].StaticConfiguration.IPConfiguration.IPAddr.IP.String()
+
+	m.logger.WithField("ip", ipAddress).Info("machine started")
+
 	// Create VM instance
 	vmInstance := &VMInstance{
 		ID:      id,
-		IP:      ip,
+		IP:      ipAddress,
 		Machine: machine,
 		Status: func() string {
 			if isWarm {
@@ -241,7 +252,7 @@ func (m *VMManager) createVM(isWarm bool) (*state.VM, error) {
 	vm := &state.VM{
 		ID:        id,
 		Status:    vmInstance.Status,
-		IP:        ip,
+		IP:        vmInstance.IP,
 		CreatedAt: vmInstance.CreatedAt,
 		LastUsed:  vmInstance.LastUsed,
 		Memory:    config.Memory,

@@ -237,7 +237,7 @@ func (s *Scheduler) executeFunction(request *ExecutionRequest) (*ExecutionResult
 	}
 
 	// Allocate a VM for execution
-	vmInstance, err := s.vmManager.GetOrCreateTestHostVM()
+	vmInstance, err := s.vmManager.GetVM()
 	if err != nil {
 		execution.Status = "failed"
 		execution.Error = fmt.Sprintf("Failed to allocate VM: %v", err)
