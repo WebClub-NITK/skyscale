@@ -4,3 +4,7 @@ assets
 firecrackerlab
 control-plane/skyscale.db
 scripts/firecrackerlab
+control-plane/function-storage/
+*.ext4
+*.db
+control-plane/skyscale.db
