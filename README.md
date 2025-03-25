@@ -152,3 +152,5 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 ## Acknowledgements
 - [Firecracker](https://github.com/firecracker-microvm/firecracker) - Secure and fast microVMs for serverless computing
 - [Ignite](https://github.com/weaveworks/ignite) - Firecracker microVM manager
+- [Stanislas](https://stanislas.blog/2021/08/firecracker/) - Firecracker setup guide
+- [Firecracker Lab](https://github.com/firecracker-microvm/firecracker-lab) - Firecracker Lab setup guide
