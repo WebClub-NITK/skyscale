@@ -18,8 +18,8 @@ import (
 
 const (
 	// Configuration
-	controlPlaneURL = "http://localhost:8080" // Control plane URL (host machine)
-	daemonPort      = "8081"                  // Port for the daemon to listen on
+	controlPlaneURL = "http://172.16.0.1:8080" // Control plane URL (host machine)
+	daemonPort      = "8081"                   // Port for the daemon to listen on
 	codeDir         = "/tmp/faas/code"
 	logDir          = "/var/log/faas"
 
@@ -31,18 +31,21 @@ const (
 
 // FunctionPayload represents the code and metadata to be executed
 type FunctionPayload struct {
-	FunctionID   string            `json:"function_id"`
-	Name         string            `json:"name"`
-	Code         string            `json:"code"`         // Function code
-	Requirements string            `json:"requirements"` // Python requirements
-	Config       string            `json:"config"`       // Function configuration
-	Runtime      string            `json:"runtime"`      // e.g., "python3.9"
-	EntryPoint   string            `json:"entry_point"`  // e.g., "handler.handler"
-	Environment  map[string]string `json:"environment"`  // Environment variables
-	RequestID    string            `json:"request_id"`   // Unique ID for this execution request
-	Timeout      int               `json:"timeout"`      // Execution timeout in seconds
-	Memory       int               `json:"memory"`       // Memory limit in MB
-	Version      string            `json:"version"`      // Function version
+	FunctionID   string                 `json:"function_id"`
+	Name         string                 `json:"name"`
+	Code         string                 `json:"code"`         // Function code
+	Requirements string                 `json:"requirements"` // Python requirements
+	Config       string                 `json:"config"`       // Function configuration
+	Runtime      string                 `json:"runtime"`      // e.g., "python3.9"
+	EntryPoint   string                 `json:"entry_point"`  // e.g., "handler.handler"
+	Environment  map[string]string      `json:"environment"`  // Environment variables
+	RequestID    string                 `json:"request_id"`   // Unique ID for this execution request
+	Timeout      int                    `json:"timeout"`      // Execution timeout in seconds
+	Memory       int                    `json:"memory"`       // Memory limit in MB
+	Version      string                 `json:"version"`      // Function version
+	Input        map[string]interface{} `json:"input"`        // Legacy input parameter (for backward compatibility)
+	Event        map[string]interface{} `json:"event"`        // Lambda-style event parameter
+	Context      map[string]interface{} `json:"context"`      // Lambda-style context parameter
 }
 
 // ExecutionResult represents the result of function execution
@@ -116,7 +119,6 @@ func main() {
 		log.Fatalf("Failed to start HTTP server: %v", err)
 	}
 }
-
 
 // handleHealthCheck handles health check requests
 func handleHealthCheck(w http.ResponseWriter, r *http.Request) {
@@ -265,6 +267,14 @@ func prepareFunction(payload *FunctionPayload, execDir string) error {
 			return fmt.Errorf("failed to create virtual environment: %v, output: %s", err, output)
 		}
 
+		//ensure pip is installed
+		// -m ensurepip --default-pip
+		ensurepipCmd := exec.Command("venv", "-m", "ensurepip", "--default-pip")
+		ensurepipCmd.Dir = execDir
+		if output, err := ensurepipCmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("failed to ensure pip is installed: %v, output: %s", err, output)
+		}
+
 		// Install requirements in the virtual environment
 		pipPath := filepath.Join(venvPath, "bin", "pip")
 		cmd := exec.Command(pipPath, "install", "-r", filepath.Join(execDir, "requirements.txt"))
@@ -298,26 +308,71 @@ func runFunction(payload *FunctionPayload, execDir string) (string, error) {
 
 		file, function := parts[0], parts[1]
 
-		// Create Python script to execute the function
+		// Use Event if available, or fall back to Input for backward compatibility
+		event := payload.Event
+		if event == nil && payload.Input != nil {
+			event = payload.Input
+		} else if event == nil {
+			event = make(map[string]interface{})
+		}
+
+		// Generate event and context JSON
+		eventJSON, err := json.Marshal(event)
+		if err != nil {
+			return "", fmt.Errorf("failed to marshal event: %v", err)
+		}
+
+		contextJSON, err := json.Marshal(payload.Context)
+		if err != nil {
+			return "", fmt.Errorf("failed to marshal context: %v", err)
+		}
+
+		// Create Python script to execute the function with event and context
 		executorCode := fmt.Sprintf(`
 import sys
 import json
 import traceback
+import os
+import time
 import %s
+
+# Create Context class to emulate Lambda Context
+class LambdaContext:
+    def __init__(self, context_dict):
+        for key, value in context_dict.items():
+            setattr(self, key, value)
+        self._start_time = time.time() * 1000  # Current time in milliseconds
+    
+    def get_remaining_time_in_millis(self):
+        elapsed = (time.time() * 1000) - self._start_time
+        return max(0, self.remaining_time_ms - elapsed)
 
 try:
     # Set up environment variables
     %s
     
-    # Execute function
-    result = %s.%s()
+    # Parse event and context
+    event = json.loads('''%s''')
+    context_dict = json.loads('''%s''')
+    context = LambdaContext(context_dict)
+    
+    # Execute function with event and context arguments
+    result = %s.%s(event, context)
+    
+    # Convert result to JSON string if not already a string
+    if not isinstance(result, str):
+        result = json.dumps(result)
+    
     print(result)
     sys.exit(0)
 except Exception as e:
-    print("Error:", str(e))
-    traceback.print_exc()
+    error_msg = str(e)
+    print(json.dumps({
+        "error": error_msg,
+        "traceback": traceback.format_exc()
+    }))
     sys.exit(1)
-`, file, generateEnvSetup(payload.Environment), file, function)
+`, file, generateEnvSetup(payload.Environment), string(eventJSON), string(contextJSON), file, function)
 
 		// Write executor script
 		if err := os.WriteFile(filepath.Join(execDir, "executor.py"), []byte(executorCode), 0644); err != nil {
@@ -350,9 +405,10 @@ except Exception as e:
 	err := cmd.Run()
 	output := stdout.String()
 	if err != nil {
+		log.Printf("Execution failed: %v, output: %s, stderr: %s", err, output, stderr.String())
 		return output, fmt.Errorf("execution failed: %v, stderr: %s", err, stderr.String())
 	}
-
+	log.Printf("Execution succeeded: %s", output)
 	return output, nil
 }
 
@@ -372,6 +428,17 @@ func generateEnvSetup(env map[string]string) string {
 
 // sendResult sends the execution result back to the control plane
 func sendResult(client *http.Client, result *ExecutionResult) error {
+	// Try to parse the output as JSON if it's not empty
+	if result.Output != "" && result.StatusCode == 200 {
+		// Check if the output is already valid JSON
+		var parsedOutput interface{}
+		err := json.Unmarshal([]byte(result.Output), &parsedOutput)
+		if err != nil {
+			// If it's not valid JSON, wrap it in a simple JSON structure
+			result.Output = fmt.Sprintf(`{"result": %q}`, result.Output)
+		}
+	}
+
 	data, err := json.Marshal(result)
 	if err != nil {
 		return fmt.Errorf("error marshaling result: %v", err)
