@@ -151,9 +151,7 @@ func (m *VMManager) createVM(isWarm bool) (*state.VM, error) {
 		Memory: 128, // Default memory in MB
 		CPU:    1,   // Default CPU count
 		Kernel: "/home/bluequbit/Dev/faas/assets/vmlinux-5.10.225",
-		RootFS: "/home/bluequbit/Dev/faas/assets/ubuntu-22.04.ext4",
-		// Kernel: "/home/bluequbit/Dev/faas/assets/hello-vmlinux.bin",
-		// RootFS: "/home/bluequbit/Dev/faas/assets/hello-rootfs.ext4",
+		RootFS: "/home/bluequbit/Dev/faas/scripts/rootfs.ext4",
 	}
 
 	// Create context for VM operations
@@ -183,7 +181,7 @@ func (m *VMManager) createVM(isWarm bool) (*state.VM, error) {
 			firecracker.NetworkInterface{
 				// finds the CNI configuration in /etc/cni/conf.d by default
 				CNIConfiguration: &firecracker.CNIConfiguration{
-					NetworkName: "ptp-net", // matches the name in your CNI config file
+					NetworkName: "fcnet", // matches the name in your CNI config file
 					IfName:      "veth0", // changed from tap0 to veth0 for ptp plugin
 				},
 				AllowMMDS: true,
