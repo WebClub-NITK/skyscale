@@ -1,19 +1,18 @@
 {
     "boot-source": {
-      "kernel_image_path": "hello-vmlinux.bin",
+      "kernel_image_path": "/home/bluequbit/Dev/faas/assets/hello-vmlinux.bin",
       "boot_args": "$KERNEL_BOOT_ARGS"
     },
     "drives": [
       {
         "drive_id": "rootfs",
-        "path_on_host": "hello-rootfs.ext4",
+        "path_on_host": "/home/bluequbit/Dev/faas/assets/ubuntu-22.04.ext4",
         "is_root_device": true,
         "is_read_only": false
       }
     ],
     "machine-config": {
       "vcpu_count": 2,
-      "mem_size_mib": 1024,
-      "ht_enabled": false
+      "mem_size_mib": 1024
     }
   }
