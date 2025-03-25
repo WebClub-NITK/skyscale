@@ -47,6 +47,7 @@ type ExecutionRequest struct {
 	FunctionID   string
 	FunctionName string
 	Input        map[string]interface{}
+	Event        map[string]interface{}
 	Sync         bool
 	RequestID    string
 }
@@ -107,6 +108,7 @@ func (s *Scheduler) ScheduleExecution(functionID string, input map[string]interf
 	request := &ExecutionRequest{
 		FunctionID: functionID,
 		Input:      input,
+		Event:      input, // Use input as event for backward compatibility
 		Sync:       sync,
 		RequestID:  requestID,
 	}
@@ -146,6 +148,7 @@ func (s *Scheduler) ScheduleExecutionByName(functionName string, input map[strin
 		FunctionID:   function.ID,
 		FunctionName: functionName,
 		Input:        input,
+		Event:        input, // Use input as event for backward compatibility
 		Sync:         sync,
 		RequestID:    requestID,
 	}
@@ -196,7 +199,11 @@ func (s *Scheduler) GetExecutionResult(requestID string) (*ExecutionResult, erro
 	var output map[string]interface{}
 	if execution.Logs != "" {
 		if err := json.Unmarshal([]byte(execution.Logs), &output); err != nil {
-			s.logger.Warnf("Failed to parse execution output: %v", err)
+			// If we can't parse as JSON, use a simple structure
+			output = map[string]interface{}{
+				"result": execution.Logs,
+			}
+			s.logger.Warnf("Failed to parse execution output as JSON, using raw output: %v", err)
 		}
 	}
 
@@ -294,7 +301,15 @@ func (s *Scheduler) executeFunction(request *ExecutionRequest) (*ExecutionResult
 			"timeout":      function.Timeout,
 			"memory":       function.Memory,
 			"version":      function.Version,
-			"input":        request.Input,
+			"input":        request.Input, // Keep for backward compatibility
+			"event":        request.Event, // Lambda-style event parameter
+			"context": map[string]interface{}{ // Lambda-style context parameter
+				"function_name":     function.Name,
+				"function_version":  function.Version,
+				"memory_limit_mb":   function.Memory,
+				"request_id":        request.RequestID,
+				"remaining_time_ms": function.Timeout * 1000, // Convert to milliseconds
+			},
 		}
 
 		// Convert payload to JSON
@@ -392,7 +407,11 @@ func (s *Scheduler) executeFunction(request *ExecutionRequest) (*ExecutionResult
 					var output map[string]interface{}
 					if execResult.Logs != "" {
 						if err := json.Unmarshal([]byte(execResult.Logs), &output); err != nil {
-							s.logger.Warnf("Failed to parse execution output: %v", err)
+							// If we can't parse as JSON, use a simple structure
+							output = map[string]interface{}{
+								"result": execResult.Logs,
+							}
+							s.logger.Warnf("Failed to parse execution output as JSON, using raw output: %v", err)
 						}
 					}
 
