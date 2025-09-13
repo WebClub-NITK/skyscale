@@ -63,9 +63,7 @@ std-out.log
 *.test
 *.prof
 *.pgo
-profile*.png
-profile*.gif
-profile*.svg
+
 
 # Function storage and VM storage
 control-plane/function-storage/
