@@ -127,8 +127,10 @@ The control plane can be configured using environment variables:
 
 - `PORT`: The port to listen on (default: 8080)
 - `DB_PATH`: The path to the SQLite database (default: skyscale.db)
-- `LOG_LEVEL`: The log level (default: info)
-- `WARM_POOL_SIZE`: The size of the warm VM pool (default: 5)
+- `FAAS_VM_KERNEL_PATH`: Path to the VM kernel image (default: $HOME/Dev/faas/assets/vmlinux-5.10.225)
+- `FAAS_VM_ROOTFS_PATH`: Path to the VM root filesystem (default: $HOME/Dev/faas/scripts/rootfs.ext4)
+- `FAAS_VM_MEMORY_MB`: Memory allocation for VMs in MB (default: 128)
+- `FAAS_VM_CPU_COUNT`: Number of CPUs allocated to VMs (default: 1)
 
 ## Development
 

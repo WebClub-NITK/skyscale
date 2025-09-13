@@ -267,9 +267,9 @@ func prepareFunction(payload *FunctionPayload, execDir string) error {
 			return fmt.Errorf("failed to create virtual environment: %v, output: %s", err, output)
 		}
 
-		//ensure pip is installed
-		// -m ensurepip --default-pip
-		ensurepipCmd := exec.Command("venv", "-m", "ensurepip", "--default-pip")
+		// Ensure pip is installed using the venv's Python interpreter
+		pythonPath := filepath.Join(venvPath, "bin", "python")
+		ensurepipCmd := exec.Command(pythonPath, "-m", "ensurepip", "--default-pip")
 		ensurepipCmd.Dir = execDir
 		if output, err := ensurepipCmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("failed to ensure pip is installed: %v, output: %s", err, output)
