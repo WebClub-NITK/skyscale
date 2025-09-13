@@ -236,7 +236,7 @@ func deployFunction(functionName string) error {
 	}
 
 	// Prepare the function data
-	data := map[string]interface{}{
+	data := map[string]any{
 		"name":         functionName,
 		"runtime":      "python3.9", // Default runtime, could be extracted from config
 		"code":         string(handlerCode),
@@ -260,7 +260,7 @@ func deployFunction(functionName string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		var errResponse map[string]interface{}
+		var errResponse map[string]any
 		if err := json.NewDecoder(resp.Body).Decode(&errResponse); err == nil {
 			if errMsg, ok := errResponse["error"].(string); ok {
 				return fmt.Errorf("failed to deploy function: %s", errMsg)
@@ -274,7 +274,7 @@ func deployFunction(functionName string) error {
 
 // InvokeRequest represents a request to invoke a function
 type InvokeRequest struct {
-	Event   map[string]interface{} `json:"event"`
+	Input   map[string]interface{} `json:"input"`
 	Context map[string]interface{} `json:"context,omitempty"`
 	Sync    bool                   `json:"sync"`
 }
@@ -291,7 +291,7 @@ var invokeCmd = &cobra.Command{
 		inputFile, _ := cmd.Flags().GetString("input-file")
 
 		// Parse input data
-		input := map[string]interface{}{}
+		input := map[string]any{}
 
 		if inputFile != "" {
 			// Read from file
@@ -321,16 +321,16 @@ var invokeCmd = &cobra.Command{
 	},
 }
 
-func invokeFunction(functionName string, input map[string]interface{}) error {
+func invokeFunction(functionName string, input map[string]any) error {
 	// Prepare the invoke data with proper context
-	context := map[string]interface{}{
+	context := map[string]any{
 		"function_name": functionName,
 		"invoked_at":    time.Now().Format(time.RFC3339),
 		"client":        "skyscale-cli",
 	}
 
 	req := InvokeRequest{
-		Event:   input,   // Use event instead of input
+		Input:   input,   // Use event instead of input
 		Context: context, // Add proper context
 		Sync:    true,    // Synchronous invocation
 	}
@@ -353,7 +353,7 @@ func invokeFunction(functionName string, input map[string]interface{}) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		var errResponse map[string]interface{}
+		var errResponse map[string]any
 		if err := json.NewDecoder(resp.Body).Decode(&errResponse); err == nil {
 			if errMsg, ok := errResponse["error"].(string); ok {
 				return fmt.Errorf("failed to invoke function: %s", errMsg)
@@ -363,7 +363,7 @@ func invokeFunction(functionName string, input map[string]interface{}) error {
 	}
 
 	// Parse and print the response
-	var result map[string]interface{}
+	var result map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return fmt.Errorf("failed to parse response: %v", err)
 	}
@@ -417,7 +417,7 @@ func getLogs(functionName string) error {
 		return fmt.Errorf("function not found: %s", resp.Status)
 	}
 
-	var function map[string]interface{}
+	var function map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&function); err != nil {
 		return fmt.Errorf("failed to parse response: %v", err)
 	}
@@ -449,7 +449,7 @@ func getLogs(functionName string) error {
 		return fmt.Errorf("failed to retrieve logs: %s", resp.Status)
 	}
 
-	var executions []map[string]interface{}
+	var executions []map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&executions); err != nil {
 		return fmt.Errorf("failed to parse response: %v", err)
 	}
@@ -504,7 +504,7 @@ var generateAPIKeyCmd = &cobra.Command{
 
 func generateAPIKey(userID string, roles []string, expiresIn int64) (string, error) {
 	// Prepare the request data
-	data := map[string]interface{}{
+	data := map[string]any{
 		"user_id":    userID,
 		"roles":      roles,
 		"expires_in": expiresIn,
@@ -528,7 +528,7 @@ func generateAPIKey(userID string, roles []string, expiresIn int64) (string, err
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		var errResponse map[string]interface{}
+		var errResponse map[string]any
 		if err := json.NewDecoder(resp.Body).Decode(&errResponse); err == nil {
 			if errMsg, ok := errResponse["error"].(string); ok {
 				return "", fmt.Errorf("failed to generate API key: %s", errMsg)
@@ -537,13 +537,13 @@ func generateAPIKey(userID string, roles []string, expiresIn int64) (string, err
 		return "", fmt.Errorf("failed to generate API key, status: %s", resp.Status)
 	}
 
-	var result map[string]string
+	var result map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return "", fmt.Errorf("failed to parse response: %v", err)
 	}
 
 	// Return the API key
-	return result["api_key"], nil
+	return result["api_key"].(string), nil
 }
 
 func main() {
