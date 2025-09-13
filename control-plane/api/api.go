@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"time"
-
+	_ "net/http/pprof"
 	"github.com/bluequbit/faas/control-plane/auth"
 	"github.com/bluequbit/faas/control-plane/registry"
 	"github.com/bluequbit/faas/control-plane/scheduler"

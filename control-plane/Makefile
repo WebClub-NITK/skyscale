@@ -32,13 +32,10 @@ clean: redis-stop
 	go clean
 	rm -f $(BINARY_NAME)
 
-# Run tests with Redis
+# Run tests
 test: redis-start
 	go test ./...
 
-# Run tests without Redis
-test-no-redis:
-	go test ./...
 
 # Build for production
 prod:
