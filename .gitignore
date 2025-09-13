@@ -1,10 +1,81 @@
-examples
-assets
-.env
-firecrackerlab
-control-plane/skyscale.db
-scripts/firecrackerlab
-control-plane/function-storage/
+# Build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+*.o
+*.a
+*.bin
+
+# Binary files
+/control-plane/control-plane
+/control-plane/skyscale-control-plane
+/cmd/cli/skyscale
+/cmd/daemon/daemon
+/plugins/bin/
+/tc-redirect-tap/tc-redirect-tap
+
+# VM and system files
 *.ext4
+*.squashfs
+*.upstream
+vmlinux*
+*.mem
+*.dat
+*.zip
+
+# Database files
 *.db
+*.sqlite
+*.sqlite3
 control-plane/skyscale.db
+
+# Credentials and keys
+*id_rsa*
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# Environment and config
+.env
+.env.*
+config.local.yaml
+*.local.json
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Logs and temp files
+*.log
+*.tmp
+std-out.log
+
+# Test coverage and profiling
+*.test
+*.prof
+*.pgo
+profile*.png
+profile*.gif
+profile*.svg
+
+# Function storage and VM storage
+control-plane/function-storage/
+control-plane/vm-storage/
+
+# Dependency directories
+vendor/
+node_modules/
+
+# OS specific
+.DS_Store
+Thumbs.db
+control-plane/skyscale-control-plane
