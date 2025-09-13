@@ -1,9 +1,30 @@
+// Copyright (c) 2024 Web Enthusiasts' Club, NITK
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
 package main
 
 import (
 	"context"
 	"flag"
 	"net/http"
+	pprof "net/http/pprof"
 	"os"
 	"os/signal"
 	"syscall"
@@ -19,6 +40,13 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sirupsen/logrus"
 )
+
+func AttachProfiler(router *mux.Router) {
+	router.HandleFunc("/debug/pprof/", pprof.Index)
+	router.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	router.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	router.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+}
 
 func main() {
 	// Parse command-line flags
@@ -67,6 +95,7 @@ func main() {
 
 	// Create router
 	router := mux.NewRouter()
+	AttachProfiler(router)
 
 	// Register API routes
 	apiHandler := api.NewAPIHandler(functionRegistry, vmManager, functionScheduler, authManager, stateManager, logger)
@@ -89,7 +118,7 @@ func main() {
 			w.Write([]byte(`{"test_mode": true, "host_vm_id": "` + TestHostVMID + `"}`))
 		})
 		//add a test/invoke endpoint
-		
+
 	}
 
 	// Start HTTP server
