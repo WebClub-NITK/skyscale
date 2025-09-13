@@ -148,10 +148,10 @@ func (m *VMManager) createVM(isWarm bool) (*state.VM, error) {
 
 	// Create VM configuration
 	config := VMConfig{
-		Memory: 128, // Default memory in MB
-		CPU:    1,   // Default CPU count
-		Kernel: "/home/bluequbit/Dev/faas/assets/vmlinux-5.10.225",
-		RootFS: "/home/bluequbit/Dev/faas/scripts/rootfs.ext4",
+		Memory: getDefaultMemoryMB(),
+		CPU:    getDefaultCPUCount(),
+		Kernel: getDefaultKernelPath(),
+		RootFS: getDefaultRootFSPath(),
 	}
 
 	// Create context for VM operations
@@ -171,7 +171,7 @@ func (m *VMManager) createVM(isWarm bool) (*state.VM, error) {
 				PathOnHost:   firecracker.String(config.RootFS),
 				IsRootDevice: firecracker.Bool(true),
 				IsReadOnly:   firecracker.Bool(false),
-			},	
+			},
 		},
 		MachineCfg: models.MachineConfiguration{
 			VcpuCount:  firecracker.Int64(int64(config.CPU)),
